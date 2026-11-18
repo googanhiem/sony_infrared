@@ -19,11 +19,6 @@ provenance, so each PR can be reviewed and opened by hand.
 
 ## Plan
 
-Core's rules for a new integration: one entity platform, Bronze, and no
-diagnostics, reconfigure or options flow in the first PR. Everything else
-follows in small PRs. LG Infrared and Samsung Infrared both started with a TV
-media player and a `device_type` field, then added more device types later.
-
 | # | Repo | PR | Needs | Status |
 | --- | --- | --- | --- | --- |
 | C1 | core | Add Sony Infrared integration: TV device type, media player (power toggle, volume, mute, channel) | infrared-protocols 10.7.0 (already in core) | Open: home-assistant/core#193272 (patches 0001 and 0002, a review fix) |
@@ -70,21 +65,3 @@ git am /path/to/sony_infrared/infrared-protocols/0001-*.patch
 - 15 tests pass, with 100% coverage of the integration.
 - All of core's pre-commit hooks pass: ruff, prettier, mypy, pylint and
   hassfest, with hassfest validating Bronze.
-
-## Prior art (checked Nov 18, 2026)
-
-- No `sony_infrared` or other Sony infrared integration in core `dev`
-  (fc0b2fc5), and no open or closed PRs or issues for one in core, the docs
-  repo or the brands repo.
-- infrared-protocols: Sony PRs #34 (SIRC, PlayStation 2) and #134 (TV codes)
-  are merged. Nothing open.
-- Adjacent, not infrared: "Add Sony TV RS-232 integration"
-  (home-assistant/core#191127) and "Add config flow to Sony Projector"
-  (home-assistant/core#191362).
-- Not checked: feature-request discussions (GitHub search doesn't cover them).
-
-## AI policy
-
-Home Assistant and infrared-protocols follow the Open Home Foundation AI
-policy: a person has to review, understand and be able to explain every
-change, and open the PRs themselves.
