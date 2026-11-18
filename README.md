@@ -26,7 +26,7 @@ media player and a `device_type` field, then added more device types later.
 
 | # | Repo | PR | Needs | Status |
 | --- | --- | --- | --- | --- |
-| C1 | core | Add Sony Infrared integration: TV device type, media player (power toggle, volume, mute, channel) | infrared-protocols 10.7.0 (already in core) | Patch ready |
+| C1 | core | Add Sony Infrared integration: TV device type, media player (power toggle, volume, mute, channel) | infrared-protocols 10.7.0 (already in core) | Open: home-assistant/core#193272 (patches 0001 and 0002, a review fix) |
 | L1 | infrared-protocols | Discrete power, HDMI 1 to 4 and playback codes for Sony TVs | Draft of C2 | Patch ready |
 | C2 | core | TV: discrete power, source select, play/pause/stop, assumed state restored on restart | L1 released and the core bump | Todo (port from ha-sony-bravia-ir) |
 | L2 | infrared-protocols | Sony AV receiver codes | Draft of C3 | Todo |

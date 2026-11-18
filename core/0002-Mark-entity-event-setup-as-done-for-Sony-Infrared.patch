@@ -1,0 +1,31 @@
+From f8a5f3ad6f6203b8234bbe4c750bd58ce1f11015 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 13:26:42 +0000
+Subject: [PATCH] Mark entity-event-setup as done for Sony Infrared
+
+The shared infrared consumer entity subscribes to the emitter's state
+changes and unsubscribes on removal, like every other infrared
+integration that marks this rule as done.
+---
+ homeassistant/components/sony_infrared/quality_scale.yaml | 5 +----
+ 1 file changed, 1 insertion(+), 4 deletions(-)
+
+diff --git a/homeassistant/components/sony_infrared/quality_scale.yaml b/homeassistant/components/sony_infrared/quality_scale.yaml
+index 5d6d1bcd..7710a931 100644
+--- a/homeassistant/components/sony_infrared/quality_scale.yaml
++++ b/homeassistant/components/sony_infrared/quality_scale.yaml
+@@ -26,10 +26,7 @@ rules:
+   docs-triggers:
+     status: exempt
+     comment: This integration does not have any triggers.
+-  entity-event-setup:
+-    status: exempt
+-    comment: |
+-      Entities do not subscribe to events.
++  entity-event-setup: done
+   entity-unique-id: done
+   has-entity-name: done
+   runtime-data:
+-- 
+2.43.0
+
