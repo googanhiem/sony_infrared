@@ -19,11 +19,6 @@ provenance, so each PR can be reviewed and opened by hand.
 
 ## Plan
 
-Core's rules for a new integration: one entity platform, Bronze, and no
-diagnostics, reconfigure or options flow in the first PR. Everything else
-follows in small PRs. LG Infrared and Samsung Infrared both started with a TV
-media player and a `device_type` field, then added more device types later.
-
 | # | Repo | PR | Needs | Status |
 | --- | --- | --- | --- | --- |
 | C1 | core | Add Sony Infrared integration: TV device type, media player (power toggle, volume, mute, channel) | infrared-protocols 10.7.0 (already in core) | Patch ready |
