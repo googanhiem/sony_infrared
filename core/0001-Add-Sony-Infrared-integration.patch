@@ -1,0 +1,955 @@
+From 89dfb749106108f8504bcf8a865e1a8383978cb9 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 10:41:32 +0000
+Subject: [PATCH] Add Sony Infrared integration
+
+Controls Sony TVs through an infrared emitter, using the SonyTVCode table
+from infrared-protocols. This first version adds the TV device type with a
+media player: power, volume, mute and channel up and down.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01RrPaBaU6zM6AhoWcyUefct
+---
+ CODEOWNERS                                    |   2 +
+ homeassistant/brands/sony.json                |   3 +-
+ .../components/sony_infrared/__init__.py      |  17 +++
+ .../components/sony_infrared/config_flow.py   |  82 ++++++++++++
+ .../components/sony_infrared/const.py         |  13 ++
+ .../components/sony_infrared/entity.py        |  24 ++++
+ .../components/sony_infrared/manifest.json    |  13 ++
+ .../components/sony_infrared/media_player.py  | 102 ++++++++++++++
+ .../sony_infrared/quality_scale.yaml          | 123 +++++++++++++++++
+ .../components/sony_infrared/strings.json     |  29 ++++
+ homeassistant/generated/config_flows.py       |   1 +
+ homeassistant/generated/integrations.json     |  12 ++
+ tests/components/sony_infrared/__init__.py    |   1 +
+ tests/components/sony_infrared/conftest.py    |  62 +++++++++
+ .../snapshots/test_media_player.ambr          |  55 ++++++++
+ .../sony_infrared/test_config_flow.py         | 124 ++++++++++++++++++
+ tests/components/sony_infrared/test_init.py   |  19 +++
+ .../sony_infrared/test_media_player.py        |  97 ++++++++++++++
+ 18 files changed, 778 insertions(+), 1 deletion(-)
+ create mode 100644 homeassistant/components/sony_infrared/__init__.py
+ create mode 100644 homeassistant/components/sony_infrared/config_flow.py
+ create mode 100644 homeassistant/components/sony_infrared/const.py
+ create mode 100644 homeassistant/components/sony_infrared/entity.py
+ create mode 100644 homeassistant/components/sony_infrared/manifest.json
+ create mode 100644 homeassistant/components/sony_infrared/media_player.py
+ create mode 100644 homeassistant/components/sony_infrared/quality_scale.yaml
+ create mode 100644 homeassistant/components/sony_infrared/strings.json
+ create mode 100644 tests/components/sony_infrared/__init__.py
+ create mode 100644 tests/components/sony_infrared/conftest.py
+ create mode 100644 tests/components/sony_infrared/snapshots/test_media_player.ambr
+ create mode 100644 tests/components/sony_infrared/test_config_flow.py
+ create mode 100644 tests/components/sony_infrared/test_init.py
+ create mode 100644 tests/components/sony_infrared/test_media_player.py
+
+diff --git a/CODEOWNERS b/CODEOWNERS
+index 0a9935e1..17ca86c1 100644
+--- a/CODEOWNERS
++++ b/CODEOWNERS
+@@ -1866,6 +1866,8 @@ AGENTS.md @home-assistant/core
+ /tests/components/songpal/ @rytilahti @shenxn
+ /homeassistant/components/sonos/ @peterager @jjlawren
+ /tests/components/sonos/ @peterager @jjlawren
++/homeassistant/components/sony_infrared/ @googanhiem
++/tests/components/sony_infrared/ @googanhiem
+ /homeassistant/components/soundtouch/ @kroimon
+ /tests/components/soundtouch/ @kroimon
+ /homeassistant/components/spaceapi/ @fabaff
+diff --git a/homeassistant/brands/sony.json b/homeassistant/brands/sony.json
+index 27bc26a3..33e72d36 100644
+--- a/homeassistant/brands/sony.json
++++ b/homeassistant/brands/sony.json
+@@ -6,6 +6,7 @@
+     "ps4",
+     "sony_projector",
+     "songpal",
+-    "playstation_network"
++    "playstation_network",
++    "sony_infrared"
+   ]
+ }
+diff --git a/homeassistant/components/sony_infrared/__init__.py b/homeassistant/components/sony_infrared/__init__.py
+new file mode 100644
+index 00000000..90227619
+--- /dev/null
++++ b/homeassistant/components/sony_infrared/__init__.py
+@@ -0,0 +1,17 @@
++"""The Sony Infrared integration."""
++
++from homeassistant.config_entries import ConfigEntry
++from homeassistant.const import Platform
++from homeassistant.core import HomeAssistant
++
++PLATFORMS: list[Platform] = [Platform.MEDIA_PLAYER]
++
++
++async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
++    """Set up Sony Infrared from a config entry."""
++    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
++
++
++async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
++    """Unload a config entry."""
++    await hass.config_entries.async_unload_platforms_or_raise(entry, PLATFORMS)
+diff --git a/homeassistant/components/sony_infrared/config_flow.py b/homeassistant/components/sony_infrared/config_flow.py
+new file mode 100644
+index 00000000..47af1930
+--- /dev/null
++++ b/homeassistant/components/sony_infrared/config_flow.py
+@@ -0,0 +1,82 @@
++"""Config flow for the Sony Infrared integration."""
++
++from typing import Any, override
++
++import probatio
++
++from homeassistant.components.infrared import (
++    DOMAIN as INFRARED_DOMAIN,
++    async_get_emitters,
++)
++from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
++from homeassistant.helpers import entity_registry as er
++from homeassistant.helpers.selector import (
++    EntitySelector,
++    EntitySelectorConfig,
++    SelectSelector,
++    SelectSelectorConfig,
++    SelectSelectorMode,
++)
++
++from .const import CONF_DEVICE_TYPE, CONF_INFRARED_ENTITY_ID, DOMAIN, SonyDeviceType
++
++DEVICE_TYPE_NAMES: dict[SonyDeviceType, str] = {
++    SonyDeviceType.TV: "TV",
++}
++
++
++class SonyIrConfigFlow(ConfigFlow, domain=DOMAIN):
++    """Handle a config flow for Sony Infrared."""
++
++    @override
++    async def async_step_user(
++        self, user_input: dict[str, Any] | None = None
++    ) -> ConfigFlowResult:
++        """Handle the device type and emitter selection."""
++        emitter_entity_ids = async_get_emitters(self.hass)
++        if not emitter_entity_ids:
++            return self.async_abort(reason="no_infrared_emitters")
++
++        if user_input is not None:
++            device_type = SonyDeviceType(user_input[CONF_DEVICE_TYPE])
++            emitter_id = user_input[CONF_INFRARED_ENTITY_ID]
++            self._async_abort_entries_match(
++                {CONF_DEVICE_TYPE: device_type, CONF_INFRARED_ENTITY_ID: emitter_id}
++            )
++            return self.async_create_entry(
++                title=(
++                    f"Sony {DEVICE_TYPE_NAMES[device_type]} via "
++                    f"{self._entity_name(emitter_id)}"
++                ),
++                data=user_input,
++            )
++
++        return self.async_show_form(
++            step_id="user",
++            data_schema=probatio.Schema(
++                {
++                    probatio.Required(CONF_DEVICE_TYPE): SelectSelector(
++                        SelectSelectorConfig(
++                            options=[
++                                device_type.value for device_type in SonyDeviceType
++                            ],
++                            translation_key=CONF_DEVICE_TYPE,
++                            mode=SelectSelectorMode.DROPDOWN,
++                        )
++                    ),
++                    probatio.Required(CONF_INFRARED_ENTITY_ID): EntitySelector(
++                        EntitySelectorConfig(
++                            domain=INFRARED_DOMAIN,
++                            include_entities=emitter_entity_ids,
++                        )
++                    ),
++                }
++            ),
++        )
++
++    def _entity_name(self, entity_id: str) -> str:
++        """Return the name of an infrared entity for the entry title."""
++        entry = er.async_get(self.hass).async_get(entity_id)
++        if entry is None:
++            return entity_id
++        return entry.name or entry.original_name or entity_id
+diff --git a/homeassistant/components/sony_infrared/const.py b/homeassistant/components/sony_infrared/const.py
+new file mode 100644
+index 00000000..61ddd119
+--- /dev/null
++++ b/homeassistant/components/sony_infrared/const.py
+@@ -0,0 +1,13 @@
++"""Constants for the Sony Infrared integration."""
++
++from enum import StrEnum
++
++DOMAIN = "sony_infrared"
++CONF_DEVICE_TYPE = "device_type"
++CONF_INFRARED_ENTITY_ID = "infrared_entity_id"
++
++
++class SonyDeviceType(StrEnum):
++    """Sony device types."""
++
++    TV = "tv"
+diff --git a/homeassistant/components/sony_infrared/entity.py b/homeassistant/components/sony_infrared/entity.py
+new file mode 100644
+index 00000000..aa493d57
+--- /dev/null
++++ b/homeassistant/components/sony_infrared/entity.py
+@@ -0,0 +1,24 @@
++"""Common entity for the Sony Infrared integration."""
++
++from homeassistant.config_entries import ConfigEntry
++from homeassistant.helpers.device_registry import DeviceInfo
++from homeassistant.helpers.entity import Entity
++
++from .const import DOMAIN
++
++
++class SonyIrEntity(Entity):
++    """Sony Infrared base entity providing common device info."""
++
++    _attr_has_entity_name = True
++
++    def __init__(
++        self, entry: ConfigEntry, unique_id_suffix: str, device_name: str
++    ) -> None:
++        """Initialize the entity."""
++        self._attr_unique_id = f"{entry.entry_id}_{unique_id_suffix}"
++        self._attr_device_info = DeviceInfo(
++            identifiers={(DOMAIN, entry.entry_id)},
++            name=device_name,
++            manufacturer="Sony",
++        )
+diff --git a/homeassistant/components/sony_infrared/manifest.json b/homeassistant/components/sony_infrared/manifest.json
+new file mode 100644
+index 00000000..fcf19d35
+--- /dev/null
++++ b/homeassistant/components/sony_infrared/manifest.json
+@@ -0,0 +1,13 @@
++{
++  "domain": "sony_infrared",
++  "name": "Sony Infrared",
++  "categories": ["media_entertainment.tv_streaming"],
++  "codeowners": ["@googanhiem"],
++  "config_flow": true,
++  "connectivity": ["infrared"],
++  "dependencies": ["infrared"],
++  "documentation": "https://www.home-assistant.io/integrations/sony_infrared",
++  "integration_type": "device",
++  "iot_class": "assumed_state",
++  "quality_scale": "bronze"
++}
+diff --git a/homeassistant/components/sony_infrared/media_player.py b/homeassistant/components/sony_infrared/media_player.py
+new file mode 100644
+index 00000000..612eaa17
+--- /dev/null
++++ b/homeassistant/components/sony_infrared/media_player.py
+@@ -0,0 +1,102 @@
++"""Media player platform for the Sony Infrared integration."""
++
++from typing import override
++
++from infrared_protocols.codes.sony.tv import SonyTVCode
++
++from homeassistant.components.infrared import InfraredEmitterConsumerEntity
++from homeassistant.components.media_player import (
++    MediaPlayerDeviceClass,
++    MediaPlayerEntity,
++    MediaPlayerEntityFeature,
++    MediaPlayerState,
++)
++from homeassistant.config_entries import ConfigEntry
++from homeassistant.core import HomeAssistant
++from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
++
++from .const import CONF_DEVICE_TYPE, CONF_INFRARED_ENTITY_ID, SonyDeviceType
++from .entity import SonyIrEntity
++
++PARALLEL_UPDATES = 1
++
++# A key press on a Sony remote sends at least three identical frames, and some
++# devices ignore a single frame.
++SIRC_REPEAT_COUNT = 2
++
++
++async def async_setup_entry(
++    hass: HomeAssistant,
++    entry: ConfigEntry,
++    async_add_entities: AddConfigEntryEntitiesCallback,
++) -> None:
++    """Set up the Sony Infrared media player from a config entry."""
++    if entry.data[CONF_DEVICE_TYPE] == SonyDeviceType.TV:
++        async_add_entities(
++            [SonyIrTvMediaPlayer(entry, entry.data[CONF_INFRARED_ENTITY_ID])]
++        )
++
++
++class SonyIrTvMediaPlayer(
++    SonyIrEntity, InfraredEmitterConsumerEntity, MediaPlayerEntity
++):
++    """Sony TV controlled over infrared."""
++
++    _attr_name = None
++    _attr_assumed_state = True
++    _attr_device_class = MediaPlayerDeviceClass.TV
++    _attr_supported_features = (
++        MediaPlayerEntityFeature.TURN_ON
++        | MediaPlayerEntityFeature.TURN_OFF
++        | MediaPlayerEntityFeature.VOLUME_STEP
++        | MediaPlayerEntityFeature.VOLUME_MUTE
++        | MediaPlayerEntityFeature.NEXT_TRACK
++        | MediaPlayerEntityFeature.PREVIOUS_TRACK
++    )
++
++    def __init__(self, entry: ConfigEntry, infrared_entity_id: str) -> None:
++        """Initialize the media player."""
++        super().__init__(entry, unique_id_suffix="media_player", device_name="Sony TV")
++        self._infrared_emitter_entity_id = infrared_entity_id
++        self._attr_state = MediaPlayerState.ON
++
++    async def _send_code(self, code: SonyTVCode) -> None:
++        """Send a key press of a Sony TV code."""
++        command = code.to_command()
++        command.repeat_count = SIRC_REPEAT_COUNT
++        await self._send_command(command)
++
++    @override
++    async def async_turn_on(self) -> None:
++        """Turn on the TV with the power toggle."""
++        await self._send_code(SonyTVCode.POWER)
++
++    @override
++    async def async_turn_off(self) -> None:
++        """Turn off the TV with the power toggle."""
++        await self._send_code(SonyTVCode.POWER)
++
++    @override
++    async def async_volume_up(self) -> None:
++        """Send volume up."""
++        await self._send_code(SonyTVCode.VOLUME_UP)
++
++    @override
++    async def async_volume_down(self) -> None:
++        """Send volume down."""
++        await self._send_code(SonyTVCode.VOLUME_DOWN)
++
++    @override
++    async def async_mute_volume(self, mute: bool) -> None:
++        """Toggle mute, as the TV has no discrete mute codes."""
++        await self._send_code(SonyTVCode.MUTE)
++
++    @override
++    async def async_media_next_track(self) -> None:
++        """Send channel up."""
++        await self._send_code(SonyTVCode.CHANNEL_UP)
++
++    @override
++    async def async_media_previous_track(self) -> None:
++        """Send channel down."""
++        await self._send_code(SonyTVCode.CHANNEL_DOWN)
+diff --git a/homeassistant/components/sony_infrared/quality_scale.yaml b/homeassistant/components/sony_infrared/quality_scale.yaml
+new file mode 100644
+index 00000000..5d6d1bcd
+--- /dev/null
++++ b/homeassistant/components/sony_infrared/quality_scale.yaml
+@@ -0,0 +1,123 @@
++rules:
++  # Bronze
++  action-setup:
++    status: exempt
++    comment: |
++      This integration does not provide additional actions.
++  appropriate-polling:
++    status: exempt
++    comment: |
++      This integration does not poll.
++  brands: done
++  common-modules: done
++  config-flow-test-coverage: done
++  config-flow: done
++  dependency-transparency: done
++  docs-actions:
++    status: exempt
++    comment: |
++      This integration does not provide additional actions.
++  docs-conditions:
++    status: exempt
++    comment: This integration does not have any conditions.
++  docs-high-level-description: done
++  docs-installation-instructions: done
++  docs-removal-instructions: done
++  docs-triggers:
++    status: exempt
++    comment: This integration does not have any triggers.
++  entity-event-setup:
++    status: exempt
++    comment: |
++      Entities do not subscribe to events.
++  entity-unique-id: done
++  has-entity-name: done
++  runtime-data:
++    status: exempt
++    comment: |
++      This integration does not store runtime data.
++  test-before-configure:
++    status: exempt
++    comment: |
++      This integration only proxies commands through an existing infrared
++      entity, so there is no connection to test in the config flow.
++  test-before-setup:
++    status: exempt
++    comment: |
++      This integration only proxies commands through an existing infrared
++      entity, so there is no separate connection to validate during setup.
++  unique-config-entry: done
++  # Silver
++  action-exceptions:
++    status: exempt
++    comment: |
++      This integration does not provide additional actions.
++  config-entry-unloading: done
++  docs-configuration-parameters:
++    status: exempt
++    comment: The integration has no configuration options.
++  docs-installation-parameters: done
++  entity-unavailable: done
++  integration-owner: done
++  log-when-unavailable: done
++  parallel-updates: done
++  reauthentication-flow:
++    status: exempt
++    comment: |
++      This integration does not require authentication.
++  test-coverage: done
++  # Gold
++  devices: done
++  diagnostics: todo
++  discovery-update-info:
++    status: exempt
++    comment: |
++      This integration does not support discovery.
++  discovery:
++    status: exempt
++    comment: |
++      Infrared devices cannot be discovered, so the integration is configured
++      manually via config flow.
++  docs-data-update:
++    status: exempt
++    comment: |
++      This integration does not fetch data from devices.
++  docs-examples: todo
++  docs-known-limitations: todo
++  docs-supported-devices: todo
++  docs-supported-functions: todo
++  docs-troubleshooting: todo
++  docs-use-cases: todo
++  dynamic-devices:
++    status: exempt
++    comment: |
++      Each config entry creates a single device.
++  entity-category: todo
++  entity-device-class: done
++  entity-disabled-by-default: todo
++  entity-translations: todo
++  exception-translations:
++    status: exempt
++    comment: |
++      This integration does not raise exceptions.
++  icon-translations: todo
++  reconfiguration-flow: todo
++  repair-issues:
++    status: exempt
++    comment: |
++      This integration does not have repairable issues.
++  stale-devices:
++    status: exempt
++    comment: |
++      Each config entry manages exactly one device.
++
++  # Platinum
++  async-dependency:
++    status: exempt
++    comment: |
++      This integration has no external dependencies.
++  inject-websession:
++    status: exempt
++    comment: |
++      This integration does not make HTTP requests.
++  strict-typing: todo
+diff --git a/homeassistant/components/sony_infrared/strings.json b/homeassistant/components/sony_infrared/strings.json
+new file mode 100644
+index 00000000..d353a6e6
+--- /dev/null
++++ b/homeassistant/components/sony_infrared/strings.json
+@@ -0,0 +1,29 @@
++{
++  "config": {
++    "abort": {
++      "already_configured": "This Sony device is already set up with this infrared emitter.",
++      "no_infrared_emitters": "[%key:common::config_flow::abort::no_infrared_emitters%]"
++    },
++    "step": {
++      "user": {
++        "data": {
++          "device_type": "[%key:common::generic::device_type%]",
++          "infrared_entity_id": "[%key:common::config_flow::data::infrared_entity_id%]"
++        },
++        "data_description": {
++          "device_type": "The type of Sony device to control.",
++          "infrared_entity_id": "[%key:common::config_flow::data_description::infrared_entity_id%]"
++        },
++        "description": "Select the type of Sony device and the infrared emitter that points at it.",
++        "title": "Set up a Sony device"
++      }
++    }
++  },
++  "selector": {
++    "device_type": {
++      "options": {
++        "tv": "[%key:common::generic::tv%]"
++      }
++    }
++  }
++}
+diff --git a/homeassistant/generated/config_flows.py b/homeassistant/generated/config_flows.py
+index d2239fb4..b968fa31 100644
+--- a/homeassistant/generated/config_flows.py
++++ b/homeassistant/generated/config_flows.py
+@@ -798,6 +798,7 @@ FLOWS = {
+         "sonarr",
+         "songpal",
+         "sonos",
++        "sony_infrared",
+         "soundtouch",
+         "specialized_turbo",
+         "speedtestdotnet",
+diff --git a/homeassistant/generated/integrations.json b/homeassistant/generated/integrations.json
+index 75865697..4db660c9 100644
+--- a/homeassistant/generated/integrations.json
++++ b/homeassistant/generated/integrations.json
+@@ -14219,6 +14219,18 @@
+             "cloud"
+           ],
+           "name": "PlayStation Network"
++        },
++        "sony_infrared": {
++          "integration_type": "device",
++          "config_flow": true,
++          "iot_class": "assumed_state",
++          "categories": [
++            "media_entertainment.tv_streaming"
++          ],
++          "connectivity": [
++            "infrared"
++          ],
++          "name": "Sony Infrared"
+         }
+       }
+     },
+diff --git a/tests/components/sony_infrared/__init__.py b/tests/components/sony_infrared/__init__.py
+new file mode 100644
+index 00000000..cd806d0c
+--- /dev/null
++++ b/tests/components/sony_infrared/__init__.py
+@@ -0,0 +1 @@
++"""Tests for the Sony Infrared integration."""
+diff --git a/tests/components/sony_infrared/conftest.py b/tests/components/sony_infrared/conftest.py
+new file mode 100644
+index 00000000..2b79c52a
+--- /dev/null
++++ b/tests/components/sony_infrared/conftest.py
+@@ -0,0 +1,62 @@
++"""Common fixtures for the Sony Infrared tests."""
++
++from collections.abc import Generator
++from unittest.mock import AsyncMock, patch
++
++import pytest
++from pytest_homeassistant.common import MockConfigEntry
++from pytest_homeassistant.components.infrared import EMITTER_ENTITY_ID
++from pytest_homeassistant.components.infrared.common import MockInfraredEmitterEntity
++
++from homeassistant.components.sony_infrared.const import (
++    CONF_DEVICE_TYPE,
++    CONF_INFRARED_ENTITY_ID,
++    DOMAIN,
++    SonyDeviceType,
++)
++from homeassistant.core import HomeAssistant
++
++ENTRY_ID = "01JTEST0000000000000000000"
++
++
++@pytest.fixture
++def mock_setup_entry() -> Generator[AsyncMock]:
++    """Override async_setup_entry."""
++    with patch(
++        "homeassistant.components.sony_infrared.async_setup_entry",
++        return_value=None,
++    ) as mock_setup_entry:
++        yield mock_setup_entry
++
++
++@pytest.fixture
++def device_type() -> SonyDeviceType:
++    """Return the device type of the config entry."""
++    return SonyDeviceType.TV
++
++
++@pytest.fixture
++def mock_config_entry(device_type: SonyDeviceType) -> MockConfigEntry:
++    """Return a mock config entry for the configured device type."""
++    return MockConfigEntry(
++        domain=DOMAIN,
++        entry_id=ENTRY_ID,
++        title=f"Sony {device_type.upper()} via Test IR emitter",
++        data={
++            CONF_DEVICE_TYPE: device_type,
++            CONF_INFRARED_ENTITY_ID: EMITTER_ENTITY_ID,
++        },
++    )
++
++
++@pytest.fixture
++async def init_integration(
++    hass: HomeAssistant,
++    mock_config_entry: MockConfigEntry,
++    mock_infrared_emitter_entity: MockInfraredEmitterEntity,
++) -> MockConfigEntry:
++    """Set up the Sony Infrared integration for testing."""
++    mock_config_entry.add_to_hass(hass)
++    await hass.config_entries.async_setup(mock_config_entry.entry_id)
++    await hass.async_block_till_done()
++    return mock_config_entry
+diff --git a/tests/components/sony_infrared/snapshots/test_media_player.ambr b/tests/components/sony_infrared/snapshots/test_media_player.ambr
+new file mode 100644
+index 00000000..213b3d93
+--- /dev/null
++++ b/tests/components/sony_infrared/snapshots/test_media_player.ambr
+@@ -0,0 +1,55 @@
++# serializer version: 1
++# name: test_entities[media_player.sony_tv-entry]
++  EntityRegistryEntrySnapshot({
++    'aliases': list([
++      None,
++    ]),
++    'area_id': None,
++    'capabilities': dict({
++    }),
++    'config_entry_id': <ANY>,
++    'config_subentry_id': None,
++    'device_class': None,
++    'device_id': <DeviceEntry identifiers=[('sony_infrared', '01JTEST0000000000000000000')]>,
++    'disabled_by': None,
++    'domain': 'media_player',
++    'entity_category': None,
++    'entity_id': 'media_player.sony_tv',
++    'has_entity_name': True,
++    'hidden_by': None,
++    'icon': None,
++    'id': <ANY>,
++    'labels': set({
++    }),
++    'name': None,
++    'object_id_base': None,
++    'options': dict({
++    }),
++    'original_device_class': <MediaPlayerDeviceClass.TV: 'tv'>,
++    'original_icon': None,
++    'original_name': None,
++    'platform': 'sony_infrared',
++    'previous_unique_id': None,
++    'suggested_object_id': None,
++    'supported_features': <MediaPlayerEntityFeature: 1464>,
++    'translation_key': None,
++    'unique_id': '01JTEST0000000000000000000_media_player',
++    'unit_of_measurement': None,
++  })
++# ---
++# name: test_entities[media_player.sony_tv-state]
++  StateSnapshot({
++    'attributes': ReadOnlyDict({
++      <EntityStateAttribute.ASSUMED_STATE: 'assumed_state'>: True,
++      <EntityStateAttribute.DEVICE_CLASS: 'device_class'>: 'tv',
++      <EntityStateAttribute.FRIENDLY_NAME: 'friendly_name'>: 'Sony TV',
++      <EntityStateAttribute.SUPPORTED_FEATURES: 'supported_features'>: <MediaPlayerEntityFeature: 1464>,
++    }),
++    'context': <ANY>,
++    'entity_id': 'media_player.sony_tv',
++    'last_changed': <ANY>,
++    'last_reported': <ANY>,
++    'last_updated': <ANY>,
++    'state': 'on',
++  })
++# ---
+diff --git a/tests/components/sony_infrared/test_config_flow.py b/tests/components/sony_infrared/test_config_flow.py
+new file mode 100644
+index 00000000..e84236d3
+--- /dev/null
++++ b/tests/components/sony_infrared/test_config_flow.py
+@@ -0,0 +1,124 @@
++"""Tests for the Sony Infrared config flow."""
++
++import pytest
++from pytest_homeassistant.common import MockConfigEntry
++from pytest_homeassistant.components.infrared import EMITTER_ENTITY_ID
++from pytest_homeassistant.components.infrared.common import MockInfraredEmitterEntity
++
++from homeassistant.components.infrared import DATA_COMPONENT as INFRARED_DATA_COMPONENT
++from homeassistant.components.sony_infrared.const import (
++    CONF_DEVICE_TYPE,
++    CONF_INFRARED_ENTITY_ID,
++    DOMAIN,
++    SonyDeviceType,
++)
++from homeassistant.config_entries import SOURCE_USER
++from homeassistant.core import HomeAssistant
++from homeassistant.data_entry_flow import FlowResultType
++from homeassistant.helpers import entity_registry as er
++
++UNREGISTERED_EMITTER_ENTITY_ID = "infrared.unregistered_ir_emitter"
++
++
++@pytest.mark.usefixtures("mock_infrared_emitter_entity", "mock_setup_entry")
++async def test_user_flow(hass: HomeAssistant) -> None:
++    """Test a successful user flow."""
++    result = await hass.config_entries.flow.async_init(
++        DOMAIN, context={"source": SOURCE_USER}
++    )
++    assert result["type"] is FlowResultType.FORM
++    assert result["step_id"] == "user"
++
++    result = await hass.config_entries.flow.async_configure(
++        result["flow_id"],
++        user_input={
++            CONF_DEVICE_TYPE: SonyDeviceType.TV,
++            CONF_INFRARED_ENTITY_ID: EMITTER_ENTITY_ID,
++        },
++    )
++
++    assert result["type"] is FlowResultType.CREATE_ENTRY
++    assert result["title"] == "Sony TV via Test IR emitter"
++    assert result["data"] == {
++        CONF_DEVICE_TYPE: SonyDeviceType.TV,
++        CONF_INFRARED_ENTITY_ID: EMITTER_ENTITY_ID,
++    }
++    assert result["result"].unique_id is None
++
++
++@pytest.mark.usefixtures("mock_infrared_emitter_entity", "mock_setup_entry")
++async def test_user_flow_title_uses_entity_registry_name(
++    hass: HomeAssistant, entity_registry: er.EntityRegistry
++) -> None:
++    """Test the entry title uses a name the user gave the emitter."""
++    entity_registry.async_update_entity(EMITTER_ENTITY_ID, name="Living room blaster")
++
++    result = await hass.config_entries.flow.async_init(
++        DOMAIN, context={"source": SOURCE_USER}
++    )
++    result = await hass.config_entries.flow.async_configure(
++        result["flow_id"],
++        user_input={
++            CONF_DEVICE_TYPE: SonyDeviceType.TV,
++            CONF_INFRARED_ENTITY_ID: EMITTER_ENTITY_ID,
++        },
++    )
++
++    assert result["type"] is FlowResultType.CREATE_ENTRY
++    assert result["title"] == "Sony TV via Living room blaster"
++
++
++@pytest.mark.usefixtures("init_infrared", "mock_setup_entry")
++async def test_user_flow_title_falls_back_to_entity_id(hass: HomeAssistant) -> None:
++    """Test the entry title uses the entity ID when it is not in the registry."""
++    emitter = MockInfraredEmitterEntity("unregistered_ir_emitter", None)
++    emitter._attr_unique_id = None
++    emitter.entity_id = UNREGISTERED_EMITTER_ENTITY_ID
++    await hass.data[INFRARED_DATA_COMPONENT].async_add_entities([emitter])
++
++    result = await hass.config_entries.flow.async_init(
++        DOMAIN, context={"source": SOURCE_USER}
++    )
++    result = await hass.config_entries.flow.async_configure(
++        result["flow_id"],
++        user_input={
++            CONF_DEVICE_TYPE: SonyDeviceType.TV,
++            CONF_INFRARED_ENTITY_ID: UNREGISTERED_EMITTER_ENTITY_ID,
++        },
++    )
++
++    assert result["type"] is FlowResultType.CREATE_ENTRY
++    assert result["title"] == f"Sony TV via {UNREGISTERED_EMITTER_ENTITY_ID}"
++
++
++@pytest.mark.usefixtures("init_infrared")
++async def test_user_flow_no_emitters(hass: HomeAssistant) -> None:
++    """Test the flow aborts when there are no infrared emitters."""
++    result = await hass.config_entries.flow.async_init(
++        DOMAIN, context={"source": SOURCE_USER}
++    )
++
++    assert result["type"] is FlowResultType.ABORT
++    assert result["reason"] == "no_infrared_emitters"
++
++
++@pytest.mark.usefixtures("mock_infrared_emitter_entity", "mock_setup_entry")
++async def test_user_flow_already_configured(
++    hass: HomeAssistant, mock_config_entry: MockConfigEntry
++) -> None:
++    """Test the flow aborts when the device type and emitter are already set up."""
++    mock_config_entry.add_to_hass(hass)
++
++    result = await hass.config_entries.flow.async_init(
++        DOMAIN, context={"source": SOURCE_USER}
++    )
++    result = await hass.config_entries.flow.async_configure(
++        result["flow_id"],
++        user_input={
++            CONF_DEVICE_TYPE: SonyDeviceType.TV,
++            CONF_INFRARED_ENTITY_ID: EMITTER_ENTITY_ID,
++        },
++    )
++
++    assert result["type"] is FlowResultType.ABORT
++    assert result["reason"] == "already_configured"
+diff --git a/tests/components/sony_infrared/test_init.py b/tests/components/sony_infrared/test_init.py
+new file mode 100644
+index 00000000..734b402b
+--- /dev/null
++++ b/tests/components/sony_infrared/test_init.py
+@@ -0,0 +1,19 @@
++"""Tests for the Sony Infrared integration setup."""
++
++from pytest_homeassistant.common import MockConfigEntry
++
++from homeassistant.config_entries import ConfigEntryState
++from homeassistant.core import HomeAssistant
++
++
++async def test_setup_and_unload_entry(
++    hass: HomeAssistant, init_integration: MockConfigEntry
++) -> None:
++    """Test setting up and unloading a config entry."""
++    entry = init_integration
++    assert entry.state is ConfigEntryState.LOADED
++
++    await hass.config_entries.async_unload(entry.entry_id)
++    await hass.async_block_till_done()
++
++    assert entry.state is ConfigEntryState.NOT_LOADED
+diff --git a/tests/components/sony_infrared/test_media_player.py b/tests/components/sony_infrared/test_media_player.py
+new file mode 100644
+index 00000000..a5eb9b22
+--- /dev/null
++++ b/tests/components/sony_infrared/test_media_player.py
+@@ -0,0 +1,97 @@
++"""Tests for the Sony Infrared media player platform."""
++
++from infrared_protocols.codes.sony.tv import (
++    SONY_TV_ADDRESS,
++    SONY_TV_ADDRESS_BITS,
++    SonyTVCode,
++)
++from infrared_protocols.commands.sony import SonyCommand
++import pytest
++from pytest_homeassistant.common import MockConfigEntry, snapshot_platform
++from pytest_homeassistant.components.common import (
++    assert_availability_follows_source_entity,
++)
++from pytest_homeassistant.components.infrared import EMITTER_ENTITY_ID
++from pytest_homeassistant.components.infrared.common import MockInfraredEmitterEntity
++from syrupy.assertion import SnapshotAssertion
++
++from homeassistant.components.media_player import (
++    DOMAIN as MEDIA_PLAYER_DOMAIN,
++    SERVICE_MEDIA_NEXT_TRACK,
++    SERVICE_MEDIA_PREVIOUS_TRACK,
++    SERVICE_TURN_OFF,
++    SERVICE_TURN_ON,
++    SERVICE_VOLUME_DOWN,
++    SERVICE_VOLUME_MUTE,
++    SERVICE_VOLUME_UP,
++)
++from homeassistant.const import ATTR_ENTITY_ID
++from homeassistant.core import HomeAssistant
++from homeassistant.helpers import device_registry as dr, entity_registry as er
++
++MEDIA_PLAYER_ENTITY_ID = "media_player.sony_tv"
++
++
++@pytest.mark.usefixtures("init_integration")
++async def test_entities(
++    hass: HomeAssistant,
++    snapshot: SnapshotAssertion,
++    entity_registry: er.EntityRegistry,
++    device_registry: dr.DeviceRegistry,
++    mock_config_entry: MockConfigEntry,
++) -> None:
++    """Test the media player entity is created with the expected attributes."""
++    await snapshot_platform(hass, entity_registry, snapshot, mock_config_entry.entry_id)
++
++    device_entry = device_registry.async_get_device_by_identifier(
++        ("sony_infrared", mock_config_entry.entry_id), mock_config_entry.entry_id
++    )
++    assert device_entry
++    assert device_entry.manufacturer == "Sony"
++
++
++@pytest.mark.parametrize(
++    ("service", "service_data", "expected_code"),
++    [
++        (SERVICE_TURN_ON, {}, SonyTVCode.POWER),
++        (SERVICE_TURN_OFF, {}, SonyTVCode.POWER),
++        (SERVICE_VOLUME_UP, {}, SonyTVCode.VOLUME_UP),
++        (SERVICE_VOLUME_DOWN, {}, SonyTVCode.VOLUME_DOWN),
++        (SERVICE_VOLUME_MUTE, {"is_volume_muted": True}, SonyTVCode.MUTE),
++        (SERVICE_MEDIA_NEXT_TRACK, {}, SonyTVCode.CHANNEL_UP),
++        (SERVICE_MEDIA_PREVIOUS_TRACK, {}, SonyTVCode.CHANNEL_DOWN),
++    ],
++)
++@pytest.mark.usefixtures("init_integration")
++async def test_media_player_action_sends_correct_code(
++    hass: HomeAssistant,
++    mock_infrared_emitter_entity: MockInfraredEmitterEntity,
++    service: str,
++    service_data: dict[str, bool],
++    expected_code: SonyTVCode,
++) -> None:
++    """Test each media player action sends a three-frame key press."""
++    await hass.services.async_call(
++        MEDIA_PLAYER_DOMAIN,
++        service,
++        {ATTR_ENTITY_ID: MEDIA_PLAYER_ENTITY_ID, **service_data},
++        blocking=True,
++    )
++
++    assert len(mock_infrared_emitter_entity.send_command_calls) == 1
++    command = mock_infrared_emitter_entity.send_command_calls[0]
++    assert isinstance(command, SonyCommand)
++    assert command.address == SONY_TV_ADDRESS
++    assert command.address_bits == SONY_TV_ADDRESS_BITS
++    assert command.command == expected_code
++    assert command.repeat_count == 2
++
++
++@pytest.mark.usefixtures("init_integration")
++async def test_media_player_availability_follows_ir_entity(
++    hass: HomeAssistant,
++) -> None:
++    """Test the media player becomes unavailable when the emitter is unavailable."""
++    await assert_availability_follows_source_entity(
++        hass, MEDIA_PLAYER_ENTITY_ID, [EMITTER_ENTITY_ID]
++    )
+-- 
+2.43.0
+

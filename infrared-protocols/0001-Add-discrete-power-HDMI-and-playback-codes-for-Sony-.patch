@@ -1,0 +1,190 @@
+From ce6106b48fcaa29ba340d9d9f6da14ad12768d2c Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 16 Nov 2026 10:51:22 +0000
+Subject: [PATCH] Add discrete power, HDMI and playback codes for Sony
+ televisions
+
+Adds POWER_ON and POWER_OFF to SonyTVCode, and a SonyTVExtendedCode table
+for the 15-bit SIRC keys Bravia sets answer on further addresses: HDMI 1
+to 4 and the playback keys. Both tables take a repeat_count, since a SIRC
+key press is the frame resent on the 45 ms period.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01RrPaBaU6zM6AhoWcyUefct
+---
+ infrared_protocols/codes/sony/tv.py | 44 ++++++++++++++++++++-
+ tests/codes/test_sony_tv.py         | 61 +++++++++++++++++++++++++++++
+ 2 files changed, 103 insertions(+), 2 deletions(-)
+
+diff --git a/infrared_protocols/codes/sony/tv.py b/infrared_protocols/codes/sony/tv.py
+index 97fd19e..4f949e3 100644
+--- a/infrared_protocols/codes/sony/tv.py
++++ b/infrared_protocols/codes/sony/tv.py
+@@ -9,15 +9,21 @@ Codes are unioned across 50 remotes driving this command set. Every entry is
+ one that at least three of them agree on, but not every television responds to
+ every code. Older sets in particular use ENTER rather than OK to confirm a
+ selection.
++
++Bravia sets also answer 15-bit SIRC on further addresses for keys added later,
++such as discrete HDMI inputs and playback keys. These are in
++``SonyTVExtendedCode`` and match the IRCC table Bravia sets report over their
++network API.
+ """
+ 
+-from enum import IntEnum, unique
++from enum import Enum, IntEnum, unique
+ 
+ from ...commands import Command
+ from ...commands.sony import SonyCommand
+ 
+ SONY_TV_ADDRESS = 0x01
+ SONY_TV_ADDRESS_BITS = 5
++SONY_TV_EXTENDED_ADDRESS_BITS = 8
+ 
+ 
+ @unique
+@@ -25,6 +31,8 @@ class SonyTVCode(IntEnum):
+     """Sony television IR command codes."""
+ 
+     POWER = 0x15
++    POWER_ON = 0x2E
++    POWER_OFF = 0x2F
+     MUTE = 0x14
+     VOLUME_UP = 0x12
+     VOLUME_DOWN = 0x13
+@@ -70,10 +78,42 @@ class SonyTVCode(IntEnum):
+     YELLOW = 0x7C
+     BLUE = 0x7D
+ 
+-    def to_command(self) -> Command:
++    def to_command(self, *, repeat_count: int = 0) -> Command:
+         """Build a SONY SIRC command for this Sony television code."""
+         return SonyCommand(
+             address=SONY_TV_ADDRESS,
+             address_bits=SONY_TV_ADDRESS_BITS,
+             command=self.value,
++            repeat_count=repeat_count,
++        )
++
++
++@unique
++class SonyTVExtendedCode(Enum):
++    """Sony television IR command codes sent as 15-bit SIRC.
++
++    The tuple value is ``(address, command)``.
++    """
++
++    HDMI_1 = (0x1A, 0x5A)
++    HDMI_2 = (0x1A, 0x5B)
++    HDMI_3 = (0x1A, 0x5C)
++    HDMI_4 = (0x1A, 0x5D)
++
++    PLAY = (0x97, 0x1A)
++    PAUSE = (0x97, 0x19)
++    STOP = (0x97, 0x18)
++    REWIND = (0x97, 0x1B)
++    FAST_FORWARD = (0x97, 0x1C)
++    PREVIOUS = (0x97, 0x3C)
++    NEXT = (0x97, 0x3D)
++
++    def to_command(self, *, repeat_count: int = 0) -> Command:
++        """Build a SONY SIRC command for this Sony television code."""
++        address, command = self.value
++        return SonyCommand(
++            address=address,
++            address_bits=SONY_TV_EXTENDED_ADDRESS_BITS,
++            command=command,
++            repeat_count=repeat_count,
+         )
+diff --git a/tests/codes/test_sony_tv.py b/tests/codes/test_sony_tv.py
+index 3917e00..cdbba4c 100644
+--- a/tests/codes/test_sony_tv.py
++++ b/tests/codes/test_sony_tv.py
+@@ -5,12 +5,15 @@ import pytest
+ from infrared_protocols.codes.sony.tv import (
+     SONY_TV_ADDRESS,
+     SONY_TV_ADDRESS_BITS,
++    SONY_TV_EXTENDED_ADDRESS_BITS,
+     SonyTVCode,
++    SonyTVExtendedCode,
+ )
+ from infrared_protocols.commands.sony import SonyCommand
+ 
+ # Leader, then two entries per bit for 12 bits, then the trailer.
+ SIRC12_ENTRIES = 26
++SIRC15_ENTRIES = 32
+ SIRC_FRAME_PERIOD_US = 45000
+ 
+ 
+@@ -33,6 +36,8 @@ def test_sony_tv_code_get_raw_timings_power() -> None:
+         pytest.param(SonyTVCode.VOLUME_UP, 0x12, id="volume_up"),
+         pytest.param(SonyTVCode.INPUT, 0x25, id="input"),
+         pytest.param(SonyTVCode.OK, 0x65, id="ok"),
++        pytest.param(SonyTVCode.POWER_ON, 0x2E, id="power_on"),
++        pytest.param(SonyTVCode.POWER_OFF, 0x2F, id="power_off"),
+     ],
+ )
+ def test_sony_tv_code_to_command(code: SonyTVCode, command: int) -> None:
+@@ -71,3 +76,59 @@ def test_sony_tv_codes_all_encode_to_a_sirc12_frame() -> None:
+         timings = code.to_command().get_raw_timings()
+         assert len(timings) == SIRC12_ENTRIES
+         assert sum(abs(timing) for timing in timings) == SIRC_FRAME_PERIOD_US
++
++
++def test_sony_tv_code_repeat_count() -> None:
++    """A key press sends the frame again once per repeat."""
++    single = SonyTVCode.POWER.to_command().get_raw_timings()
++    command = SonyTVCode.POWER.to_command(repeat_count=2)
++    assert command.repeat_count == 2
++    assert command.get_raw_timings() == single * 3
++
++
++def test_sony_tv_extended_code_get_raw_timings_hdmi_1() -> None:
++    """Test the encoded 15-bit frame for the HDMI 1 key."""
++    expected_raw_timings = [
++        2400, -600, 600, -600, 1200, -600, 600, -600, 1200, -600, 1200, -600, 600,
++        -600, 1200, -600, 600, -600, 1200, -600, 600, -600, 1200, -600, 1200, -600,
++        600, -600, 600, -600, 600, -20400,
++    ]  # fmt: skip
++    command = SonyTVExtendedCode.HDMI_1.to_command()
++    assert command.get_raw_timings() == expected_raw_timings
++    assert command.modulation == 40000
++
++
++@pytest.mark.parametrize(
++    ("code", "address", "command"),
++    [
++        pytest.param(SonyTVExtendedCode.HDMI_1, 0x1A, 0x5A, id="hdmi_1"),
++        pytest.param(SonyTVExtendedCode.HDMI_2, 0x1A, 0x5B, id="hdmi_2"),
++        pytest.param(SonyTVExtendedCode.HDMI_3, 0x1A, 0x5C, id="hdmi_3"),
++        pytest.param(SonyTVExtendedCode.HDMI_4, 0x1A, 0x5D, id="hdmi_4"),
++        pytest.param(SonyTVExtendedCode.PLAY, 0x97, 0x1A, id="play"),
++        pytest.param(SonyTVExtendedCode.PAUSE, 0x97, 0x19, id="pause"),
++        pytest.param(SonyTVExtendedCode.STOP, 0x97, 0x18, id="stop"),
++        pytest.param(SonyTVExtendedCode.REWIND, 0x97, 0x1B, id="rewind"),
++        pytest.param(SonyTVExtendedCode.FAST_FORWARD, 0x97, 0x1C, id="fast_forward"),
++        pytest.param(SonyTVExtendedCode.PREVIOUS, 0x97, 0x3C, id="previous"),
++        pytest.param(SonyTVExtendedCode.NEXT, 0x97, 0x3D, id="next"),
++    ],
++)
++def test_sony_tv_extended_code_to_command(
++    code: SonyTVExtendedCode, address: int, command: int
++) -> None:
++    """Each extended code builds a 15-bit SIRC command on its own address."""
++    built = code.to_command(repeat_count=2)
++    assert isinstance(built, SonyCommand)
++    assert built.address == address
++    assert built.address_bits == SONY_TV_EXTENDED_ADDRESS_BITS
++    assert built.command == command
++    assert built.repeat_count == 2
++
++
++def test_sony_tv_extended_codes_all_encode_to_a_sirc15_frame() -> None:
++    """Every extended code must produce a full 15-bit frame padded to the period."""
++    for code in SonyTVExtendedCode:
++        timings = code.to_command().get_raw_timings()
++        assert len(timings) == SIRC15_ENTRIES
++        assert sum(abs(timing) for timing in timings) == SIRC_FRAME_PERIOD_US
+-- 
+2.43.0
+
